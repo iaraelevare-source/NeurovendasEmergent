@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, index } from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -38,7 +38,10 @@ export const keywords = mysqlTable("keywords", {
   isActive: int("isActive").default(1).notNull(), // 1 = active, 0 = inactive
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+}, (table) => ({
+  userIdIdx: index("idx_keywords_user").on(table.userId),
+  userActiveIdx: index("idx_keywords_user_active").on(table.userId, table.isActive),
+}));
 
 export type Keyword = typeof keywords.$inferSelect;
 export type InsertKeyword = typeof keywords.$inferInsert;
@@ -60,7 +63,11 @@ export const rankings = mysqlTable("rankings", {
   change: int("change").default(0), // positive = improved, negative = declined
   changeType: mysqlEnum("changeType", ["up", "down", "stable"]).default("stable"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  keywordDateIdx: index("idx_rankings_keyword_date").on(table.keywordId, table.date),
+  userKeywordIdx: index("idx_rankings_user_keyword").on(table.userId, table.keywordId),
+  dateIdx: index("idx_rankings_date").on(table.date),
+}));
 
 export type Ranking = typeof rankings.$inferSelect;
 export type InsertRanking = typeof rankings.$inferInsert;
@@ -97,7 +104,10 @@ export const alerts = mysqlTable("alerts", {
   sentToSlack: int("sentToSlack").default(0).notNull(),
   sentToEmail: int("sentToEmail").default(0).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => ({
+  userCreatedIdx: index("idx_alerts_user_created").on(table.userId, table.createdAt),
+  userReadIdx: index("idx_alerts_user_read").on(table.userId, table.isRead),
+}));
 
 export type Alert = typeof alerts.$inferSelect;
 export type InsertAlert = typeof alerts.$inferInsert;

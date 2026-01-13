@@ -59,6 +59,10 @@ export const appRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const { id, ...data } = input;
+        // ✅ Verificar ownership antes de modificar
+        const { verifyKeywordOwnership } = await import("./_core/ownership");
+        await verifyKeywordOwnership(id, ctx.user.id);
+        
         const { updateKeyword } = await import("./db");
         await updateKeyword(id, ctx.user.id, data);
         return { success: true };
@@ -67,6 +71,10 @@ export const appRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        // ✅ Verificar ownership antes de deletar
+        const { verifyKeywordOwnership } = await import("./_core/ownership");
+        await verifyKeywordOwnership(input.id, ctx.user.id);
+        
         const { deleteKeyword } = await import("./db");
         await deleteKeyword(input.id, ctx.user.id);
         return { success: true };
@@ -141,6 +149,10 @@ export const appRouter = router({
     markAsRead: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
+        // ✅ Verificar ownership antes de modificar
+        const { verifyAlertOwnership } = await import("./_core/ownership");
+        await verifyAlertOwnership(input.id, ctx.user.id);
+        
         const { markAlertAsRead } = await import("./db");
         await markAlertAsRead(input.id, ctx.user.id);
         return { success: true };

@@ -7,6 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { globalLimiter, authLimiter } from "./rateLimiter";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -30,11 +31,18 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+  
+  // ✅ Rate limiting ANTES de qualquer rota
+  app.use('/api/', globalLimiter);
+  
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-  // OAuth callback under /api/oauth/callback
+  
+  // ✅ OAuth com rate limiting específico
+  app.use('/api/oauth/', authLimiter);
   registerOAuthRoutes(app);
+  
   // tRPC API
   app.use(
     "/api/trpc",

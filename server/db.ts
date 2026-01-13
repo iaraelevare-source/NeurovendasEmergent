@@ -242,41 +242,55 @@ export async function getRankingsSummary(userId: number) {
   if (!db) return { totalKeywords: 0, avgPosition: 0, improved: 0, declined: 0, stable: 0 };
   
   const { keywords, rankings } = await import("../drizzle/schema");
-  const { and, desc, sql } = await import("drizzle-orm");
+  const { and, eq, sql } = await import("drizzle-orm");
   
-  // Get all active keywords
-  const userKeywords = await db.select().from(keywords)
+  // ✅ UMA ÚNICA QUERY com subquery - elimina N+1
+  const result = await db
+    .select({
+      keywordId: keywords.id,
+      latestPosition: sql<number>`(
+        SELECT r.position 
+        FROM ${rankings} r 
+        WHERE r.keywordId = ${keywords.id} 
+          AND r.userId = ${userId}
+        ORDER BY r.date DESC 
+        LIMIT 1
+      )`,
+      latestChangeType: sql<string>`(
+        SELECT r.changeType 
+        FROM ${rankings} r 
+        WHERE r.keywordId = ${keywords.id} 
+          AND r.userId = ${userId}
+        ORDER BY r.date DESC 
+        LIMIT 1
+      )`,
+    })
+    .from(keywords)
     .where(and(eq(keywords.userId, userId), eq(keywords.isActive, 1)));
   
-  if (userKeywords.length === 0) {
-    return { totalKeywords: 0, avgPosition: 0, improved: 0, declined: 0, stable: 0 };
-  }
-  
+  // Processar resultados
   let totalPosition = 0;
   let countWithPosition = 0;
   let improved = 0;
   let declined = 0;
   let stable = 0;
   
-  for (const keyword of userKeywords) {
-    const latest = await db.select().from(rankings)
-      .where(and(eq(rankings.keywordId, keyword.id), eq(rankings.userId, userId)))
-      .orderBy(desc(rankings.date))
-      .limit(1);
-    
-    if (latest.length > 0 && latest[0]!.position) {
-      totalPosition += latest[0]!.position;
+  for (const row of result) {
+    if (row.latestPosition) {
+      totalPosition += row.latestPosition;
       countWithPosition++;
-      
-      if (latest[0]!.changeType === "up") improved++;
-      else if (latest[0]!.changeType === "down") declined++;
-      else stable++;
     }
+    
+    if (row.latestChangeType === 'up') improved++;
+    else if (row.latestChangeType === 'down') declined++;
+    else stable++;
   }
   
   return {
-    totalKeywords: userKeywords.length,
-    avgPosition: countWithPosition > 0 ? Math.round(totalPosition / countWithPosition * 10) / 10 : 0,
+    totalKeywords: result.length,
+    avgPosition: countWithPosition > 0 
+      ? Math.round(totalPosition / countWithPosition * 10) / 10 
+      : 0,
     improved,
     declined,
     stable,
@@ -294,7 +308,23 @@ export async function getGscToken(userId: number) {
   const { gscTokens } = await import("../drizzle/schema");
   const result = await db.select().from(gscTokens).where(eq(gscTokens.userId, userId)).limit(1);
   
-  return result.length > 0 ? result[0] : undefined;
+  if (result.length === 0) return undefined;
+  
+  const token = result[0]!;
+  
+  // Tentar descriptografar - se falhar, retornar como está (backward compatibility)
+  try {
+    const { decrypt } = await import('./_core/encryption');
+    return {
+      ...token,
+      accessToken: decrypt(token.accessToken),
+      refreshToken: decrypt(token.refreshToken),
+    };
+  } catch (error) {
+    // Se ENCRYPTION_KEY não estiver configurada ou tokens não estiverem criptografados
+    console.warn('[Database] Tokens não criptografados ou erro ao descriptografar');
+    return token;
+  }
 }
 
 export async function upsertGscToken(data: {
@@ -310,19 +340,31 @@ export async function upsertGscToken(data: {
   const { gscTokens } = await import("../drizzle/schema");
   type InsertGscToken = typeof gscTokens.$inferInsert;
   
+  // Tentar criptografar - se falhar, salvar sem criptografia (backward compatibility)
+  let encryptedAccessToken = data.accessToken;
+  let encryptedRefreshToken = data.refreshToken;
+  
+  try {
+    const { encrypt } = await import('./_core/encryption');
+    encryptedAccessToken = encrypt(data.accessToken);
+    encryptedRefreshToken = encrypt(data.refreshToken);
+  } catch (error) {
+    console.warn('[Database] ENCRYPTION_KEY não configurada - salvando tokens SEM criptografia!');
+  }
+  
   const insertData: InsertGscToken = {
     userId: data.userId,
     siteUrl: data.siteUrl,
-    accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
+    accessToken: encryptedAccessToken,
+    refreshToken: encryptedRefreshToken,
     expiresAt: data.expiresAt,
   };
   
   await db.insert(gscTokens).values(insertData).onDuplicateKeyUpdate({
     set: {
       siteUrl: data.siteUrl,
-      accessToken: data.accessToken,
-      refreshToken: data.refreshToken,
+      accessToken: encryptedAccessToken,
+      refreshToken: encryptedRefreshToken,
       expiresAt: data.expiresAt,
     },
   });
