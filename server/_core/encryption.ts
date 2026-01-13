@@ -1,0 +1,62 @@
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
+
+const ALGORITHM = 'aes-256-gcm';
+const KEY_LENGTH = 32;
+const IV_LENGTH = 16;
+const TAG_LENGTH = 16;
+
+// Gera chave a partir da senha (env var)
+function getKey(): Buffer {
+  const secret = process.env.ENCRYPTION_KEY;
+  if (!secret || secret.length < 32) {
+    throw new Error('ENCRYPTION_KEY must be at least 32 characters');
+  }
+  // Usa salt fixo para mesma chave sempre (importante para decrypt)
+  const salt = process.env.ENCRYPTION_SALT || 'neurovend-salt-2026';
+  return scryptSync(secret, salt, KEY_LENGTH);
+}
+
+export function encrypt(text: string): string {
+  try {
+    const key = getKey();
+    const iv = randomBytes(IV_LENGTH);
+    const cipher = createCipheriv(ALGORITHM, key, iv);
+    
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const tag = cipher.getAuthTag();
+    
+    // Formato: iv:tag:encrypted
+    return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted}`;
+  } catch (error) {
+    console.error('[Encryption] Failed to encrypt:', error);
+    throw new Error('Encryption failed');
+  }
+}
+
+export function decrypt(encryptedData: string): string {
+  try {
+    const key = getKey();
+    const parts = encryptedData.split(':');
+    
+    if (parts.length !== 3) {
+      throw new Error('Invalid encrypted data format');
+    }
+    
+    const iv = Buffer.from(parts[0]!, 'hex');
+    const tag = Buffer.from(parts[1]!, 'hex');
+    const encrypted = parts[2]!;
+    
+    const decipher = createDecipheriv(ALGORITHM, key, iv);
+    decipher.setAuthTag(tag);
+    
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  } catch (error) {
+    console.error('[Encryption] Failed to decrypt:', error);
+    throw new Error('Decryption failed');
+  }
+}

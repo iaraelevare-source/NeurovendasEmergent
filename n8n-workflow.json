@@ -1,0 +1,366 @@
+{
+  "name": "NeuroVendas SEO Weekly Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "aggregate",
+        "collection": "keywords",
+        "query": "{ \"isActive\": 1 }",
+        "options": {}
+      },
+      "id": "get-keywords",
+      "name": "Get Active Keywords",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "mongoDb": {
+          "id": "MONGODB_CREDENTIALS",
+          "name": "MongoDB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-keywords",
+      "name": "Split Into Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/webmasters/v3/sites/{{$json.siteUrl}}/searchAnalytics/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "startDate",
+              "value": "={{ $now.minus({ days: 7 }).toFormat('yyyy-MM-dd') }}"
+            },
+            {
+              "name": "endDate",
+              "value": "={{ $now.toFormat('yyyy-MM-dd') }}"
+            },
+            {
+              "name": "dimensions",
+              "value": "[\"query\"]"
+            },
+            {
+              "name": "dimensionFilterGroups",
+              "value": "[{\"filters\": [{\"dimension\": \"query\", \"expression\": \"{{$json.keyword}}\"}]}]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "gsc-api-call",
+      "name": "Google Search Console API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "GOOGLE_API_CREDENTIALS",
+          "name": "Google API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract ranking data\nconst keyword = $input.item.json;\nconst gscData = $input.all()[0].json;\n\nlet position = null;\nlet impressions = 0;\nlet clicks = 0;\nlet ctr = 0;\n\nif (gscData.rows && gscData.rows.length > 0) {\n  const row = gscData.rows[0];\n  position = Math.round(row.position);\n  impressions = row.impressions;\n  clicks = row.clicks;\n  ctr = (row.ctr * 100).toFixed(2);\n}\n\n// Get previous ranking\nconst db = $input.item.json.previousRanking || {};\nconst oldPosition = db.position || null;\n\n// Calculate change\nlet change = 0;\nlet changeType = 'stable';\n\nif (position && oldPosition) {\n  change = oldPosition - position; // positive = improved (moved up)\n  if (change > 0) changeType = 'up';\n  else if (change < 0) changeType = 'down';\n}\n\n// Get current date info\nconst now = new Date();\nconst date = now.toISOString().split('T')[0];\nconst week = Math.ceil((now.getDate() + 6 - now.getDay()) / 7);\nconst year = now.getFullYear();\n\nreturn {\n  keywordId: keyword.id,\n  userId: keyword.userId,\n  keyword: keyword.keyword,\n  position,\n  impressions,\n  clicks,\n  ctr: String(ctr),\n  date,\n  week,\n  year,\n  change,\n  changeType,\n  oldPosition,\n  targetPosition: keyword.targetPosition\n};"
+      },
+      "id": "process-data",
+      "name": "Process Ranking Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "rankings",
+        "fields": "keywordId,userId,position,impressions,clicks,ctr,date,week,year,change,changeType",
+        "options": {}
+      },
+      "id": "save-ranking",
+      "name": "Save Ranking to DB",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "credentials": {
+        "mongoDb": {
+          "id": "MONGODB_CREDENTIALS",
+          "name": "MongoDB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{Math.abs($json.change)}}",
+              "operation": "largerEqual",
+              "value2": 3
+            }
+          ]
+        }
+      },
+      "id": "check-significant-change",
+      "name": "Significant Change?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Você é um especialista em SEO. Analise a mudança de ranking e forneça insights concisos."
+            },
+            {
+              "role": "user",
+              "content": "Keyword: {{$json.keyword}}\\nPosição anterior: {{$json.oldPosition}}\\nPosição atual: {{$json.position}}\\nMudança: {{$json.change}}\\nImpressions: {{$json.impressions}}\\nClicks: {{$json.clicks}}\\n\\nForneça uma análise breve (máximo 2 frases) sobre essa mudança."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "openai-analysis",
+      "name": "OpenAI Analysis",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [1650, 200],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_API_CREDENTIALS",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "alerts",
+        "fields": "userId,keywordId,type,message,oldPosition,newPosition",
+        "options": {}
+      },
+      "id": "save-alert",
+      "name": "Save Alert to DB",
+      "type": "n8n-nodes-base.mongodb",
+      "typeVersion": 1,
+      "position": [1850, 200],
+      "credentials": {
+        "mongoDb": {
+          "id": "MONGODB_CREDENTIALS",
+          "name": "MongoDB"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "#seo-alerts",
+        "text": "🔔 *Mudança Significativa de Ranking*\\n\\n*Keyword:* {{$json.keyword}}\\n*Posição:* {{$json.oldPosition}} → {{$json.position}}\\n*Mudança:* {{$json.changeType === 'up' ? '📈 +' : '📉 '}}{{Math.abs($json.change)}} posições\\n*Impressões:* {{$json.impressions}}\\n*Cliques:* {{$json.clicks}}\\n\\n*Análise IA:* {{$json.aiInsight}}",
+        "otherOptions": {}
+      },
+      "id": "slack-alert",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [2050, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_API_CREDENTIALS",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "SEO Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{$json.date}}",
+            "Keyword": "={{$json.keyword}}",
+            "Old Position": "={{$json.oldPosition}}",
+            "New Position": "={{$json.position}}",
+            "Change": "={{$json.change}}",
+            "Type": "={{$json.changeType}}",
+            "Impressions": "={{$json.impressions}}",
+            "Clicks": "={{$json.clicks}}",
+            "AI Insight": "={{$json.aiInsight}}"
+          }
+        },
+        "options": {}
+      },
+      "id": "google-sheets-log",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2250, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "GOOGLE_SHEETS_CREDENTIALS",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Active Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Keywords": {
+      "main": [
+        [
+          {
+            "node": "Split Into Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Items": {
+      "main": [
+        [
+          {
+            "node": "Google Search Console API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Search Console API": {
+      "main": [
+        [
+          {
+            "node": "Process Ranking Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Ranking Data": {
+      "main": [
+        [
+          {
+            "node": "Save Ranking to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Ranking to DB": {
+      "main": [
+        [
+          {
+            "node": "Significant Change?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Significant Change?": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Save Alert to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Alert to DB": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-06T00:00:00.000Z",
+  "versionId": "1"
+}
